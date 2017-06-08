@@ -29,6 +29,8 @@
 #include <opencv2/opencv.hpp>
 #include <sl/Core.hpp>
 #include <sl/defines.hpp>
+#include <numeric>
+#include <vector>
 
 typedef struct mouseOCVStruct {
     sl::Mat depth;
@@ -89,9 +91,9 @@ int main(int argc, char **argv) {
     // Image Processing
     sl::Mat depth_image_raw_sl(image_size, sl::MAT_TYPE_32F_C4);
     cv::Mat depth_image_raw_ocv = slMat2cvMat(depth_image_raw_sl);
-    cv::Mat X, Y, Z;
+    cv::Mat X, Y, Z, X_disp, Y_disp;
     cv::Mat Y_re, Z_re;
-    cv::Mat mask;
+    cv::Mat mask, result_bw_image(displaySize, CV_8UC1);
     std::vector<cv::Mat> XYZ;
     std::vector<cv::Mat> image_channels;
     cv::Mat result_image;
@@ -114,6 +116,47 @@ int main(int argc, char **argv) {
         Y = XYZ[1];
         Z = XYZ[2];
 
+        // detect path process
+        std::vector<float> z_result;
+        double z_sum = 0;
+        int flags = 0;
+
+        for (int x = 0; x < Z.cols; ++x)
+        {
+            for(int y = 0; y < Z.rows; ++y)
+            {
+                if( Z.at<float>(y, x) > 1.5)
+                {
+                    flags = 1;
+                    result_bw_image.at<uchar>(y, x) = 200;
+                }
+                else
+                {
+                    flags = 0;
+                    result_bw_image.at<uchar>(y, x) = 0;
+                }
+            }
+            switch (flags)
+            {
+            case 0:
+                z_result.push_back(0);
+            case 1:
+                z_result.push_back(1);
+            default:
+                break;
+            }
+        }
+
+        //std::cout << "size: " << z_result.size() << std::endl;
+
+        // compute mean
+        //float z_mean = std::accumulate(z_result.begin(), z_result.end(), 0.0) / z_result.size();
+        //std::cout << "mean: " << z_mean << std::endl;
+
+        // detect max depth value
+        //float z_max = *std::max_element(z_result.begin(), z_result.end());
+        //std::cout << "max value: " << z_max << std::endl;
+
         // create mask
         //cv::inRange(Y, cv::Scalar(0.39), cv::Scalar(1.0), Y_re);
         //cv::inRange(Z, cv::Scalar(1.5), cv::Scalar(10.0), Z_re);
@@ -121,18 +164,21 @@ int main(int argc, char **argv) {
 
         //image_ocv.setTo(cv::Scalar(200.0, 0.0, 100.0), Y > 0.390);
 
-        image_ocv.setTo(cv::Scalar(255.0, 0.0, 0.0), Z > 0.7);
-        image_ocv.setTo(cv::Scalar(0.0, 255.0, 0.0), Z > 1.0);
-        image_ocv.setTo(cv::Scalar(0.0, 0.0, 255.0), Z > 1.5);
-        image_ocv.setTo(cv::Scalar(255.0, 255.0, 0.0), Z > 2.0);
+        //image_ocv.setTo(cv::Scalar(255.0, 0.0, 0.0), Z > 0.7);
+        //image_ocv.setTo(cv::Scalar(0.0, 255.0, 0.0), Z > 1.0);
+        //image_ocv.setTo(cv::Scalar(0.0, 0.0, 255.0), Z > 1.5);
+        //image_ocv.setTo(cv::Scalar(255.0, 255.0, 0.0), Z > 2.0);
+
+        //image_ocv.setTo(cv::Scalar(255.0, 0.0, 0.0), X > 1.0);
 
         // Resize and display with OpenCV
         cv::resize(image_ocv, image_ocv_display, displaySize);
         cv::imshow("Image", image_ocv_display);
-        //image_ocv.copyTo(result_image, Y_re);
         cv::resize(depth_image_ocv, depth_image_ocv_display, displaySize);
         cv::imshow("Depth", depth_image_ocv_display);
-        //cv::imshow("result", Y_re);
+        cv::imshow("b", result_bw_image);
+        //cv::imshow("Y", Y);
+        //cv::imshow("Z", Z);
         key = cv::waitKey(10);
         }
     }
