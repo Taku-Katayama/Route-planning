@@ -124,7 +124,7 @@ int main(int argc, char **argv) {
         image_ocv.setTo(cv::Scalar(255.0, 0.0, 0.0), Z > 0.7);
         image_ocv.setTo(cv::Scalar(0.0, 255.0, 0.0), Z > 1.0);
         image_ocv.setTo(cv::Scalar(0.0, 0.0, 255.0), Z > 1.5);
-        image_ocv.setTo(cv::Scalar(50.0, 200.0, 50.0), Z > 2.0);
+        image_ocv.setTo(cv::Scalar(255.0, 255.0, 0.0), Z > 2.0);
 
         // Resize and display with OpenCV
         cv::resize(image_ocv, image_ocv_display, displaySize);
