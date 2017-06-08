@@ -30,8 +30,6 @@
 #include <sl/Core.hpp>
 #include <sl/defines.hpp>
 
-//using namespace sl;
-
 typedef struct mouseOCVStruct {
     sl::Mat depth;
     cv::Size _resize;
@@ -61,17 +59,16 @@ int main(int argc, char **argv) {
 
     // Set runtime parameters after opening the camera
     sl::RuntimeParameters runtime_parameters;
-    runtime_parameters.sensing_mode = sl::SENSING_MODE_FILL; // Use STANDARD sensing mode
+    runtime_parameters.sensing_mode = sl::SENSING_MODE_STANDARD; // Use STANDARD sensing mode
 
     // Create sl and cv Mat to get ZED left image and depth image
     // Best way of sharing sl::Mat and cv::Mat :
     // Create a sl::Mat and then construct a cv::Mat using the ptr to sl::Mat data.
     sl::Resolution image_size = zed.getResolution();
-	  sl::Mat image_zed(image_size, sl::MAT_TYPE_8U_C4); // Create a sl::Mat to handle Left image
-	  cv::Mat image_ocv = slMat2cvMat(image_zed);
-	  sl::Mat depth_image_zed(image_size, sl::MAT_TYPE_8U_C4);
-	  cv::Mat depth_image_ocv = slMat2cvMat(depth_image_zed);
-
+    sl::Mat image_zed(image_size, sl::MAT_TYPE_8U_C4); // Create a sl::Mat to handle Left image
+    cv::Mat image_ocv = slMat2cvMat(image_zed);
+    sl::Mat depth_image_zed(image_size, sl::MAT_TYPE_8U_C4);
+    cv::Mat depth_image_ocv = slMat2cvMat(depth_image_zed);
 
     // Create OpenCV images to display (lower resolution to fit the screen)
     cv::Size displaySize(672, 376);
@@ -89,13 +86,13 @@ int main(int argc, char **argv) {
     // Jetson only. Execute the calling thread on 2nd core
     sl::Camera::sticktoCPUCore(2);
 
-	  // Image Processing
+    // Image Processing
     sl::Mat depth_image_raw_sl(image_size, sl::MAT_TYPE_32F_C4);
     cv::Mat depth_image_raw_ocv = slMat2cvMat(depth_image_raw_sl);
-	  cv::Mat X, Y, Z;
+    cv::Mat X, Y, Z;
     cv::Mat Y_re, Z_re;
     cv::Mat mask;
-	  std::vector<cv::Mat> XYZ;
+    std::vector<cv::Mat> XYZ;
     std::vector<cv::Mat> image_channels;
     cv::Mat result_image;
 
@@ -103,40 +100,40 @@ int main(int argc, char **argv) {
     char key = ' ';
     while (key != 'q') {
 
-      // Grab and display image and depth
-      if (zed.grab(runtime_parameters) == sl::SUCCESS) {
+        // Grab and display image and depth
+        if (zed.grab(runtime_parameters) == sl::SUCCESS) {
 
-      zed.retrieveImage(image_zed, sl::VIEW_LEFT); // Retrieve the left image
-      zed.retrieveImage(depth_image_zed, sl::VIEW_DEPTH); //Retrieve the depth view (image)
-			zed.retrieveMeasure(depth_image_raw_sl, sl::MEASURE_XYZ); // Retrieve the XYZ measure
-      zed.retrieveMeasure(mouseStruct.depth, sl::MEASURE_DEPTH); // Retrieve the depth measure (32bits)
+        zed.retrieveImage(image_zed, sl::VIEW_LEFT); // Retrieve the left image
+        zed.retrieveImage(depth_image_zed, sl::VIEW_DEPTH); //Retrieve the depth view (image)
+        zed.retrieveMeasure(depth_image_raw_sl, sl::MEASURE_XYZ); // Retrieve the XYZ measure
+        zed.retrieveMeasure(mouseStruct.depth, sl::MEASURE_DEPTH); // Retrieve the depth measure (32bits)
 
-			// split
-			cv::split(depth_image_raw_ocv, XYZ);
-			X = XYZ[0];
-			Y = XYZ[1];
-			Z = XYZ[2];
+        // split
+        cv::split(depth_image_raw_ocv, XYZ);
+        X = XYZ[0];
+        Y = XYZ[1];
+        Z = XYZ[2];
 
-      // create mask
-      cv::inRange(Y, cv::Scalar(0), cv::Scalar(0.4), Y_re);
-      cv::inRange(Z, cv::Scalar(1.5), cv::Scalar(10.0), Z_re);
-      cv::bitwise_and(Y_re, Z_re, mask);
+        // create mask
+        //cv::inRange(Y, cv::Scalar(0.39), cv::Scalar(1.0), Y_re);
+        //cv::inRange(Z, cv::Scalar(1.5), cv::Scalar(10.0), Z_re);
+        //cv::bitwise_and(Y_re, Z_re, mask);
 
-			//image_ocv.setTo(cv::Scalar(200.0, 0.0, 100.0), Y > -0.1);
+        //image_ocv.setTo(cv::Scalar(200.0, 0.0, 100.0), Y > 0.390);
 
-			//image_ocv.setTo(cv::Scalar(0.0, 200.0, 100.0), Z > 1.5);
+        image_ocv.setTo(cv::Scalar(255.0, 0.0, 0.0), Z > 0.7);
+        image_ocv.setTo(cv::Scalar(0.0, 255.0, 0.0), Z > 1.0);
+        image_ocv.setTo(cv::Scalar(0.0, 0.0, 255.0), Z > 1.5);
+        image_ocv.setTo(cv::Scalar(50.0, 200.0, 50.0), Z > 2.0);
 
-      // Resize and display with OpenCV
-      cv::resize(image_ocv, image_ocv_display, displaySize);
-      cv::imshow("Image", image_ocv_display);
-      Z.copyTo(result_image, mask);
-      cv::resize(depth_image_ocv, depth_image_ocv_display, displaySize);
-      cv::imshow("Depth", depth_image_ocv_display);
-			cv::imshow("result", result_image);
-			//cv::imshow("result0", result0);
-      //cv::imshow("Z result", Z_re);
-      key = cv::waitKey(10);
-
+        // Resize and display with OpenCV
+        cv::resize(image_ocv, image_ocv_display, displaySize);
+        cv::imshow("Image", image_ocv_display);
+        //image_ocv.copyTo(result_image, Y_re);
+        cv::resize(depth_image_ocv, depth_image_ocv_display, displaySize);
+        cv::imshow("Depth", depth_image_ocv_display);
+        //cv::imshow("result", Y_re);
+        key = cv::waitKey(10);
         }
     }
 
