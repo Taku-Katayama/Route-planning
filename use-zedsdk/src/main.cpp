@@ -31,6 +31,8 @@
 #include <sl/defines.hpp>
 #include <numeric>
 #include <vector>
+#include <chrono>
+#include <fstream>
 
 typedef struct mouseOCVStruct {
     sl::Mat depth;
@@ -93,14 +95,33 @@ int main(int argc, char **argv) {
     cv::Mat depth_image_raw_ocv = slMat2cvMat(depth_image_raw_sl);
     cv::Mat X, Y, Z, X_disp, Y_disp;
     cv::Mat Y_re, Z_re;
-    cv::Mat mask, result_bw_image(displaySize, CV_8UC1);
+    cv::Mat mask;
+    cv::Mat result_bw_image(displaySize, CV_8UC1);
+    cv::Mat result_z_clustering(displaySize, CV_8UC3);
+    cv::Mat result_float_image(displaySize, CV_32S);
     std::vector<cv::Mat> XYZ;
     std::vector<cv::Mat> image_channels;
     cv::Mat result_image;
+    cv::Mat result_path(displaySize, CV_8UC1);
+
+    std::chrono::system_clock::time_point start, end;
+    double time = 0;
+
+    std::string output_file_name = "path_data/path.txt";
+    std::ofstream output_file;
+    output_file.open(output_file_name, std::ios::out);
+    output_file << "path" << std::endl;
 
     // Loop until 'q' is pressed
     char key = ' ';
-    while (key != 'q') {
+    while (key != 'q') 
+    {
+
+        start = std::chrono::system_clock::now();
+
+        result_bw_image.setTo(0);
+        result_z_clustering.setTo(0);
+        result_path.setTo(0);
 
         // Grab and display image and depth
         if (zed.grab(runtime_parameters) == sl::SUCCESS) {
@@ -116,38 +137,51 @@ int main(int argc, char **argv) {
         Y = XYZ[1];
         Z = XYZ[2];
 
-        // detect path process
-        std::vector<float> z_result;
-        double z_sum = 0;
-        int flags = 0;
+        /////////////////////////
+        // detect path process //
+        /////////////////////////
 
-        for (int x = 0; x < Z.cols; ++x)
+        std::vector<int> ref_point;
+
+        result_bw_image.setTo(200, Y > 0.390);
+        result_bw_image.setTo(0, Y > 500);
+
+        for (int y = 0; y < Z.rows; ++y)
         {
-            for(int y = 0; y < Z.rows; ++y)
+            for(int x = 0; x < Z.cols; ++x)
             {
-                if( Z.at<float>(y, x) > 1.5)
+                if (result_bw_image.at<uchar>(y, x) == 200)
                 {
-                    flags = 1;
-                    result_bw_image.at<uchar>(y, x) = 200;
+                    int count = 1;
+                    int start_index = x;
+                    while (result_bw_image.at<uchar>(y, x + count) == 200 || (x + count) == Z.cols)
+                    {
+                        count++;
+                    }
+                    int end_index = start_index + count;
+                    ref_point.push_back((start_index + end_index) / 2);
+                    if (ref_point.size() >= 2) 
+                    {
+                        double min;
+                        std::vector<double> error;
+                        double fku_l = 338.334;
+                        for (int i = 0; i < ref_point.size(); ++i)
+                        {
+                            error.push_back(abs((double)ref_point[i] - fku_l));
+                        }
+                        std::vector<double>::iterator error_min = std::min_element(error.begin(), error.end());
+                        int minIndex = std::distance(error.begin(), error_min);
+                        ref_point[0] = ref_point[minIndex];
+                    }
+                    result_path.at<uchar>(y, ref_point[0]) = (char)255;
+                    cv::circle(image_ocv, cv::Point(ref_point[0], y), 3, cv::Scalar(0.0, 0.0, 255.0), -1);
+                    //std::cout << "y= " << y << " start= " << start_index << " end= " << end_index << " count= " << count << " point= " << ref_point << std::endl;
+                    x += count;
                 }
-                else
-                {
-                    flags = 0;
-                    result_bw_image.at<uchar>(y, x) = 0;
-                }
-            }
-            switch (flags)
-            {
-            case 0:
-                z_result.push_back(0);
-            case 1:
-                z_result.push_back(1);
-            default:
-                break;
             }
         }
 
-        //std::cout << "size: " << z_result.size() << std::endl;
+
 
         // compute mean
         //float z_mean = std::accumulate(z_result.begin(), z_result.end(), 0.0) / z_result.size();
@@ -156,6 +190,12 @@ int main(int argc, char **argv) {
         // detect max depth value
         //float z_max = *std::max_element(z_result.begin(), z_result.end());
         //std::cout << "max value: " << z_max << std::endl;
+
+        // 
+        //double z_max = 0, z_min = 0;
+        //result_float_image.convertTo(result_float_image, CV_32F);
+        //cv::minMaxLoc(result_float_image, &z_min, &z_max);
+        //std::cout << "result float : max value = " << z_max << std::endl;
 
         // create mask
         //cv::inRange(Y, cv::Scalar(0.39), cv::Scalar(1.0), Y_re);
@@ -171,14 +211,29 @@ int main(int argc, char **argv) {
 
         //image_ocv.setTo(cv::Scalar(255.0, 0.0, 0.0), X > 1.0);
 
+        end = std::chrono::system_clock::now();
+        time += std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
         // Resize and display with OpenCV
         cv::resize(image_ocv, image_ocv_display, displaySize);
         cv::imshow("Image", image_ocv_display);
         cv::resize(depth_image_ocv, depth_image_ocv_display, displaySize);
         cv::imshow("Depth", depth_image_ocv_display);
-        cv::imshow("b", result_bw_image);
-        //cv::imshow("Y", Y);
-        //cv::imshow("Z", Z);
+        cv::imshow("bw result", result_bw_image);
+        cv::imshow("result path", result_path);
+        //cv::imshow("z clustering", result_z_clustering);
+
+        
+        //std::string save_image_name = "Data/image/image_" + std::to_string(time) + ".png";
+        //std::string save_depth_name = "Data/depth/depth_" + std::to_string(time) + ".png";
+        //std::string save_y_name = "Data/y/y_" + std::to_string(time) + ".png";
+        //std::string save_path_name = "Data/path/path_" + std::to_string(time) + ".png";
+
+        //cv::imwrite(save_image_name, image_ocv);
+        //cv::imwrite(save_depth_name, depth_image_ocv);
+        //cv::imwrite(save_y_name, result_bw_image);
+        //cv::imwrite(save_path_name, result_path);
+
         key = cv::waitKey(10);
         }
     }
