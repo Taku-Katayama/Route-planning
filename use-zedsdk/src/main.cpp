@@ -32,7 +32,9 @@
 #include <numeric>
 #include <vector>
 #include <chrono>
-#include <fstream>
+#include <fstream> // file I/O
+#include <windows.h> // IPC
+
 
 typedef struct mouseOCVStruct {
     sl::Mat depth;
@@ -43,9 +45,24 @@ mouseOCV mouseStruct;
 
 static void onMouseCallback(int32_t event, int32_t x, int32_t y, int32_t flag, void * param);
 cv::Mat slMat2cvMat(sl::Mat& input);
+inline double pid_controller_near(int ref, double delta);
+inline double pid_controller_far(int ref, double delta);
 
+double Kp_n = 0.3;
+double Ki_n = 1.5;
+double Kd_n = 0.015;
+double Kp_f = 0.42;
+double Ki_f = 2.1;
+double kd_f = 0.029;
+double P = 0;
+double I = 0;
+double D = 0;
+double error[2] = { 0 };
+double cx = 338.334;
+double integral = 0;
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv) 
+{
 
     // Create a ZED camera object
     sl::Camera zed;
@@ -103,14 +120,46 @@ int main(int argc, char **argv) {
     std::vector<cv::Mat> image_channels;
     cv::Mat result_image;
     cv::Mat result_path(displaySize, CV_8UC1);
+    cv::Mat result_path_3d(displaySize, CV_8UC1);
+    double agv_width = 0.350;
+    int save_2d = 0, save_3d = 0;
+    int save_x = 0;
 
     std::chrono::system_clock::time_point start, end;
-    double time = 0;
+    double time_nano = 0, time_sec = 0, time_output = 0;;
 
-    std::string output_file_name = "path_data/path.txt";
-    std::ofstream output_file;
+    std::string output_file_name = "path.txt";
+    std::string output_U_file_name = "U.txt";
+    std::ofstream output_file, output_U_file;
     output_file.open(output_file_name, std::ios::out);
+    output_U_file.open(output_U_file_name, std::ios::out);
     output_file << "path" << std::endl;
+    output_U_file << "U data" << std::endl;
+    output_U_file << "delta[s],U,ref point[pix]" << std::endl;
+
+    // IPC
+    HANDLE hPipe;
+    char szBuff[32];
+    DWORD dwNumberOfBytesRead;
+    DWORD dwNumberOfBytesWritten;
+
+    hPipe = CreateFile("\\\\.\\pipe\\pwm",
+        GENERIC_READ | GENERIC_WRITE,
+        0,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+
+    std::cout << "Connecting server ..." << std::endl;
+
+    if (hPipe == INVALID_HANDLE_VALUE)
+    {
+        std::cout << "Connect client : False" << std::endl;
+        return 1;
+    }
+
+    std::cout << "Connect client : Success" << std::endl;
 
     // Loop until 'q' is pressed
     char key = ' ';
@@ -142,12 +191,24 @@ int main(int argc, char **argv) {
         /////////////////////////
 
         std::vector<int> ref_point;
+        std::vector<double> ref_width;
+        std::vector<float> ref_depth;
+        std::vector<float> ref_depth_3d;
+        std::vector<float> error_x_3d;
+        std::vector<int> save_y, save_y_3d, save_ref_2d, save_ref_3d;
+        double cx_l = 338.334;
+        double X_camera_center = 0.06;
+        int output_ref_point_2d = 0;
+        double output_ref_width_3d = 0;
+        int ref_z_max, ref_z_min, est_x_index, ref_3d_min, ref_3d_max;
 
         result_bw_image.setTo(200, Y > 0.390);
         result_bw_image.setTo(0, Y > 500);
 
         for (int y = 0; y < Z.rows; ++y)
         {
+            ref_point.clear();
+            ref_width.clear();
             for(int x = 0; x < Z.cols; ++x)
             {
                 if (result_bw_image.at<uchar>(y, x) == 200)
@@ -159,60 +220,99 @@ int main(int argc, char **argv) {
                         count++;
                     }
                     int end_index = start_index + count;
-                    ref_point.push_back((start_index + end_index) / 2);
-                    if (ref_point.size() >= 2) 
+
+                    /////////////////////////////////
+                    // use image axis only process //
+                    /////////////////////////////////
+
+                    output_ref_point_2d = (start_index + end_index) / 2;
+                    ref_point.push_back(output_ref_point_2d);
+                    std::vector<double> error;
+                    for (int i = 0; i < ref_point.size(); ++i)
                     {
-                        double min;
-                        std::vector<double> error;
-                        double fku_l = 338.334;
-                        for (int i = 0; i < ref_point.size(); ++i)
-                        {
-                            error.push_back(abs((double)ref_point[i] - fku_l));
-                        }
-                        std::vector<double>::iterator error_min = std::min_element(error.begin(), error.end());
-                        int minIndex = std::distance(error.begin(), error_min);
-                        ref_point[0] = ref_point[minIndex];
+                        error.push_back(abs((double)ref_point[i] - cx_l));
                     }
-                    result_path.at<uchar>(y, ref_point[0]) = (char)255;
-                    cv::circle(image_ocv, cv::Point(ref_point[0], y), 3, cv::Scalar(0.0, 0.0, 255.0), -1);
-                    //std::cout << "y= " << y << " start= " << start_index << " end= " << end_index << " count= " << count << " point= " << ref_point << std::endl;
+                    std::vector<double>::iterator error_min = std::min_element(error.begin(), error.end());
+                    int minIndex = std::distance(error.begin(), error_min);
+                    output_ref_point_2d = ref_point[minIndex];
+
+                    //////////////////////////
+                    // use 3d point process //
+                    //////////////////////////
+
+                    double path_width = X.at<float>(y, end_index) - X.at<float>(y, start_index);
+                    if (path_width >= agv_width) 
+                    {
+                    double center_width = path_width / 2;
+                    output_ref_width_3d = X.at<float>(y, start_index) + center_width;
+                    ref_width.push_back(output_ref_width_3d);
+                    std::vector<double> error_3d;
+                    for (int i = 0; i < ref_width.size(); ++i)
+                    {
+                        error_3d.push_back(abs(ref_width[i] - X_camera_center));
+                    }
+                    std::vector<double>::iterator error_3d_min = std::min_element(error_3d.begin(), error_3d.end());
+                    int error_min_index = std::distance(error_3d.begin(), error_3d_min);
+                    output_ref_width_3d = ref_width[error_min_index];
+
+                    ref_depth.push_back(Z.at<float>(y, output_ref_point_2d));
+                    save_y.push_back(y);
+                    save_ref_2d.push_back(output_ref_point_2d);
+                    std::vector<float>::iterator ref_z_min_index = std::min_element(ref_depth.begin(), ref_depth.end());
+                    std::vector<float>::iterator ref_z_max_index = std::max_element(ref_depth.begin(), ref_depth.end());
+                    ref_z_min = std::distance(ref_depth.begin(), ref_z_min_index);
+                    ref_z_max = std::distance(ref_depth.begin(), ref_z_max_index);
+                    
+                    //result_path.at<uchar>(y, output_ref_point_2d) = (char)255;
+                    //cv::circle(image_ocv, cv::Point(output_ref_point_2d, y), 3, cv::Scalar(0.0, 0.0, 255.0), -1);
+                    //std::cout << "ref= " << output_ref_width_3d << " y= " << y << std::endl;
+                    //std::cout << "y= " << y << " start= " << start_index << " end= " << end_index << " width= " << path_width << std::endl;
+                    }
                     x += count;
                 }
             }
         }
 
+        if (!save_y.empty() || !save_ref_2d.empty())
+        {
+            result_path.at<uchar>(save_y[ref_z_max], save_ref_2d[ref_z_max]) = (char)255;
+            result_path.at<uchar>(save_y[ref_z_min], save_ref_2d[ref_z_min]) = (char)255;
+            cv::circle(image_ocv, cv::Point(save_ref_2d[ref_z_max], save_y[ref_z_max]), 3, cv::Scalar(0.0, 0.0, 255.0), -1);
+            cv::circle(image_ocv, cv::Point(save_ref_2d[ref_z_min], save_y[ref_z_min]), 3, cv::Scalar(255.0, 0.0, 0.0), -1);
+            //cv::circle(image_ocv, cv::Point(save_ref_3d[ref_z_max], save_y[ref_z_max]), 3, cv::Scalar(0.0, 255.0, 0.0), -1);
+            //cv::circle(image_ocv, cv::Point(save_ref_3d[ref_z_min], save_y[ref_z_min]), 3, cv::Scalar(255.0, 0.0, 255.0), -1);
 
+            //std::cout << "pre= " << save_2d << " now= " << save_ref_2d[ref_z_max] << std::endl;
 
-        // compute mean
-        //float z_mean = std::accumulate(z_result.begin(), z_result.end(), 0.0) / z_result.size();
-        //std::cout << "mean: " << z_mean << std::endl;
+            ////////////////////
+            // pid controller //
+            ////////////////////
 
-        // detect max depth value
-        //float z_max = *std::max_element(z_result.begin(), z_result.end());
-        //std::cout << "max value: " << z_max << std::endl;
+            end = std::chrono::system_clock::now();
+            time_nano = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+            time_sec = time_nano * pow(10, -9);
+            time_output += time_sec;
 
-        // 
-        //double z_max = 0, z_min = 0;
-        //result_float_image.convertTo(result_float_image, CV_32F);
-        //cv::minMaxLoc(result_float_image, &z_min, &z_max);
-        //std::cout << "result float : max value = " << z_max << std::endl;
+            if (save_2d - save_ref_2d[ref_z_min] <= 50)
+            {
+                double U = pid_controller_near(save_ref_2d[ref_z_min], time_sec);
+                output_U_file << time_output << "," << U << "," << save_ref_2d[ref_z_min] << std::endl;
+                sprintf(szBuff, "%lf", U);
+                WriteFile(hPipe, szBuff, strlen(szBuff), &dwNumberOfBytesWritten, NULL);
+                std::cout << "near" << std::endl;
+            }
+            else
+            {
+                double U = pid_controller_far(save_ref_2d[ref_z_max], time_sec);
+                output_U_file << time_output << "," << U << "," << save_ref_2d[ref_z_max] << std::endl;
+                sprintf(szBuff, "%lf", U);
+                WriteFile(hPipe, szBuff, strlen(szBuff), &dwNumberOfBytesWritten, NULL);
+                std::cout << "far" << std::endl;
+            }
 
-        // create mask
-        //cv::inRange(Y, cv::Scalar(0.39), cv::Scalar(1.0), Y_re);
-        //cv::inRange(Z, cv::Scalar(1.5), cv::Scalar(10.0), Z_re);
-        //cv::bitwise_and(Y_re, Z_re, mask);
-
-        //image_ocv.setTo(cv::Scalar(200.0, 0.0, 100.0), Y > 0.390);
-
-        //image_ocv.setTo(cv::Scalar(255.0, 0.0, 0.0), Z > 0.7);
-        //image_ocv.setTo(cv::Scalar(0.0, 255.0, 0.0), Z > 1.0);
-        //image_ocv.setTo(cv::Scalar(0.0, 0.0, 255.0), Z > 1.5);
-        //image_ocv.setTo(cv::Scalar(255.0, 255.0, 0.0), Z > 2.0);
-
-        //image_ocv.setTo(cv::Scalar(255.0, 0.0, 0.0), X > 1.0);
-
-        end = std::chrono::system_clock::now();
-        time += std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+            save_2d = save_ref_2d[ref_z_min];
+            save_3d = save_ref_3d[ref_3d_max];
+        }
 
         // Resize and display with OpenCV
         cv::resize(image_ocv, image_ocv_display, displaySize);
@@ -221,13 +321,13 @@ int main(int argc, char **argv) {
         cv::imshow("Depth", depth_image_ocv_display);
         cv::imshow("bw result", result_bw_image);
         cv::imshow("result path", result_path);
-        //cv::imshow("z clustering", result_z_clustering);
+        //cv::imshow("X", X);
 
         
-        //std::string save_image_name = "Data/image/image_" + std::to_string(time) + ".png";
-        //std::string save_depth_name = "Data/depth/depth_" + std::to_string(time) + ".png";
-        //std::string save_y_name = "Data/y/y_" + std::to_string(time) + ".png";
-        //std::string save_path_name = "Data/path/path_" + std::to_string(time) + ".png";
+        //std::string save_image_name = "Data/2d_result/image/image_" + std::to_string(time) + ".png";
+        //std::string save_depth_name = "Data/2d_result/depth/depth_" + std::to_string(time) + ".png";
+        //std::string save_y_name = "Data/2d_result/y/y_" + std::to_string(time) + ".png";
+        //std::string save_path_name = "Data/2d_result/path/path_" + std::to_string(time) + ".png";
 
         //cv::imwrite(save_image_name, image_ocv);
         //cv::imwrite(save_depth_name, depth_image_ocv);
@@ -238,6 +338,7 @@ int main(int argc, char **argv) {
         }
     }
 
+    //CloseHandle(hPipe);
     zed.close();
     return 0;
 }
@@ -287,4 +388,28 @@ cv::Mat slMat2cvMat(sl::Mat& input)
 	// cv::Mat data requires a uchar* pointer. Therefore, we get the uchar1 pointer from sl::Mat (getPtr<T>())
 	//cv::Mat and sl::Mat will share the same memory pointer
 	return cv::Mat(input.getHeight(), input.getWidth(), cv_type, input.getPtr<sl::uchar1>(sl::MEM_CPU));
+}
+
+inline double pid_controller_near(int ref, double delta)
+{
+    error[0] = error[1];
+    error[1] = cx - ref;
+    integral += (error[0] + error[1]) * delta / 2.0;
+    P = Kp_n * error[1];
+    I = Ki_n * integral;
+    D = Kd_n * (error[1] - error[0]) / delta;
+
+    return P + I + D;
+}
+
+inline double pid_controller_far(int ref, double delta)
+{
+    error[0] = error[1];
+    error[1] = cx - ref;
+    integral += (error[0] + error[1]) * delta / 2.0;
+    P = Kp_f * error[1];
+    I = Ki_f * integral;
+    D = kd_f * (error[1] - error[0]) / delta;
+
+    return P + I + D;
 }
